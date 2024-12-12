@@ -1,0 +1,6 @@
+phonenumbers
+streamlit
+python-dotenv
+langchain
+openai
+faiss-cpu
