@@ -88,11 +88,11 @@ def extract_phone_number(text: str, region: str = "RU") -> str | None:
     return None
 
 
-def save_user_phone_request(query: str, phone_log_path: str):
-    normalized_phone = extract_phone_number(query)
+def save_user_phone_request(user_input: str, history: list, phone_log_path: str):
+    normalized_phone = extract_phone_number(user_input)
 
     if normalized_phone:
-        description = generate_description(query)
+        description = generate_description(history)
 
         try:
             if os.path.exists(phone_log_path):
@@ -113,17 +113,28 @@ def save_user_phone_request(query: str, phone_log_path: str):
         return None
 
 
-def generate_description(query: str) -> str:
+def generate_description(history: list) -> str:
     """
-    Генерирует краткое описание запроса пользователя.
-    :param query: Полный текст запроса.
-    :return: Краткое описание.
+    Генерирует краткое описание на основе истории ввода пользователя.
+    :param history: История сообщений пользователя (список словарей с ключами 'role' и 'content').
+    :return: Краткое описание запроса пользователя.
     """
+    # Преобразуем историю в читаемый формат
+    user_history = "\n".join(
+        f"Пользователь: {msg['content']}" for msg in history if msg["role"] == "user"
+    )
+
+    # Промпт для генерации описания
     prompt = (
-        f"Пользователь задал следующий вопрос или сделал запрос: '{query}'.\n"
-        "Сформируй краткое и понятное описание, чтобы менеджер понял суть запроса. "
-        "Например, если пользователь хочет купить ноутбук 1999 года, опиши это как 'Пользователь интересуется "
-        "покупкой ноутбука выпуска 1999 года'."
+        f"Вот история сообщений пользователя:\n{user_history}\n\n"
+        "На основе этой истории сформируй краткое и понятное описание запроса пользователя. "
+        "Старайся быть максимально точным и кратким. Например:\n"
+        "- Если пользователь интересуется покупкой ноутбука, опиши это как 'Пользователь интересуется покупкой "
+        "ноутбука'.\n"
+        "- Если пользователь хочет заказать доставку, опиши это как 'Пользователь хочет заказать доставку'.\n"
+        "- Если пользователь спрашивает о количестве товара, опиши это как 'Пользователь интересуется количеством "
+        "товара'.\n"
+        "Сформулируй одно предложение, которое описывает суть запроса пользователя."
     )
 
     llm = ChatOpenAI(model="gpt-4o-mini", openai_api_key=openai_api_key)
@@ -258,7 +269,9 @@ if __name__ == "__main__":
                     "Ты умный ассистент. "
                     "Не используй словосочетания типа 'согласно предоставленным данным' или 'в списке'. "
                     "Ответы должны быть максимально простыми, естественными и без лишних формальностей. И чтобы "
-                    "пользователь получил максимум конкретной информации."
+                    "пользователь получил максимум конкретной информации"
+                    "Если ты не смог найти информацию то предложе пользователю оставить номер чтобы с ним связался "
+                    "менеджер."
                 )
             }
         ]
@@ -270,7 +283,7 @@ if __name__ == "__main__":
     user_input = st.text_input("Ваш вопрос:", placeholder="Введите сообщение здесь...")
 
     if st.button("Отправить") and user_input.strip():
-        phone_response = save_user_phone_request(user_input, PHONE_LOG_PATH)
+        phone_response = save_user_phone_request(user_input, st.session_state["chat_history"], PHONE_LOG_PATH)
         if phone_response:
             st.write(f"**Бот:** {phone_response}")
         else:
