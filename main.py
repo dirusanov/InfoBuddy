@@ -10,6 +10,7 @@ from langchain.embeddings.openai import OpenAIEmbeddings
 from langchain.schema import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.vectorstores import FAISS
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
 load_dotenv()
 openai_api_key = os.getenv("OPENAI_API_KEY")
@@ -107,7 +108,7 @@ def save_user_phone_request(query: str, phone_log_path: str):
         with open(phone_log_path, "w", encoding="utf-8") as file:
             json.dump(phone_logs, file, ensure_ascii=False, indent=4)
 
-        return f"Ваш номер телефона {normalized_phone} сохранён. Менеджер свяжется с вами."
+        return f"Спасибо. Менеджер свяжется с вами в ближайшее время."
     else:
         return None
 
@@ -121,7 +122,8 @@ def generate_description(query: str) -> str:
     prompt = (
         f"Пользователь задал следующий вопрос или сделал запрос: '{query}'.\n"
         "Сформируй краткое и понятное описание, чтобы менеджер понял суть запроса. "
-        "Например, если пользователь хочет купить ноутбук 1999 года, опиши это как 'Пользователь интересуется покупкой ноутбука выпуска 1999 года'."
+        "Например, если пользователь хочет купить ноутбук 1999 года, опиши это как 'Пользователь интересуется "
+        "покупкой ноутбука выпуска 1999 года'."
     )
 
     llm = ChatOpenAI(model="gpt-4o-mini", openai_api_key=openai_api_key)
@@ -129,33 +131,113 @@ def generate_description(query: str) -> str:
     return description.strip()
 
 
+def determine_object(response: str, relevant_data: str) -> str:
+    """
+    Определяет предмет, о котором идёт речь, на основании ответа и данных.
+    :param response: Ответ GPT.
+    :param relevant_data: Данные, найденные в JSON.
+    :return: Название предмета.
+    """
+    prompt = (
+        f"Ответ, данный пользователю: '{response}'.\n\n"
+        f"Вот что удалось найти в данных. result_search:\n{relevant_data}\n\n"
+        "На основании ответа и данных определи, о каком конкретном предмете идёт речь. "
+        "Верни всю доступную информацию о предмете. Без лишней воды, например название, количество, цену и т.д. "
+        "Если предмет невозможно определить, верни 'Неизвестно'."
+        "Ответ должен быть структурированным и понятным и содержать конкретные данные из result_search."
+    )
+
+    llm = ChatOpenAI(model="gpt-4o-mini", openai_api_key=openai_api_key)
+    determined_object = llm.predict(prompt)
+    return determined_object.strip()
+
+
+def group_and_structure_data(raw_data: str) -> str:
+    """
+    Отправляет данные в LLM для группировки и структурирования.
+
+    :param raw_data: Строка с сырыми данными для обработки.
+    :return: Структурированный результат в удобочитаемом виде.
+    """
+    prompt = (
+        f"У тебя есть следующие данные:\n\n"
+        f"{raw_data}\n\n"
+        "Сгруппируй эти данные по логическим категориям или типам объектов. Укажи только категории и сгруппированные "
+        "элементы, без дублирующихся данных. "
+        "Представь результат в структурированном и удобочитаемом виде."
+    )
+
+    # Отправляем запрос в OpenAI
+    llm = ChatOpenAI(model="gpt-4o-mini", openai_api_key=openai_api_key)
+    structured_result = llm.predict(prompt)
+
+    return structured_result.strip()
+
+
+def convert_to_messages(history):
+    """
+    Конвертирует историю чата из словарей в объекты LangChain.
+    :param history: Список словарей с ключами "role" и "content".
+    :return: Список объектов HumanMessage, AIMessage или SystemMessage.
+    """
+    messages = []
+    for message in history:
+        role = message["role"]
+        content = message["content"]
+
+        if role == "user":
+            messages.append(HumanMessage(content=content))
+        elif role == "assistant":
+            messages.append(AIMessage(content=content))
+        elif role == "system":
+            messages.append(SystemMessage(content=content))
+        else:
+            raise ValueError(f"Неизвестная роль: {role}")
+    return messages
+
+
 def generate_response(query: str, index_path: str):
+    # Выполняем поиск в индексе
     results = search_in_index(query, index_path)
 
-    # Отбираем релевантные результаты
+    # Формируем контекст из результатов поиска
+    relevant_data = None
     if results:
         relevant_data = "\n".join([result.page_content for result in results])
         context = f"Вот что удалось найти:\n{relevant_data}" if relevant_data else "Данные отсутствуют."
     else:
         context = "Данные отсутствуют."
 
-    messages = st.session_state["chat_history"]
-    messages.append({"role": "user", "content": query})
+    # Добавляем текущий предмет разговора в контекст, если он есть
+    current_item = st.session_state.get("current_item", None)
+    if current_item:
+        context = f"Текущий предмет разговора: {current_item}.\n{context}"
 
-    prompt = (
-        f"Вопрос пользователя: {query}\n\n"
-        f"{context}\n\n"
-        "Используя предоставленные данные, постарайся дать точный ответ на вопрос пользователя. "
-        "Если данных недостаточно или ответ не может быть однозначным, предложи пользователю оставить свой номер телефона "
-        "для связи с менеджером."
-    )
+    # Добавляем текущий запрос пользователя в историю
+    st.session_state["chat_history"].append({"role": "user", "content": query})
 
+    # Конвертируем историю чата в формат LangChain
+    messages = convert_to_messages(st.session_state["chat_history"])
+
+    # Формируем сообщение с контекстом
+    if context and context != "Данные отсутствуют.":
+        messages.append(SystemMessage(content=f"Контекст: {context}"))
+
+    # Запрашиваем GPT через LangChain
     llm = ChatOpenAI(model="gpt-4o", openai_api_key=openai_api_key)
-    response = llm.predict(prompt)
+    response_message = llm.predict_messages(messages)
 
-    messages.append({"role": "assistant", "content": response})
+    # Добавляем ответ ассистента в историю
+    st.session_state["chat_history"].append({"role": "assistant", "content": response_message.content})
 
-    return response
+    # Обновляем текущий предмет разговора
+    if relevant_data:
+        grouped_data = group_and_structure_data(relevant_data)
+        current_item = determine_object(response_message.content, grouped_data)
+        st.session_state["current_item"] = current_item
+
+    return response_message.content
+
 
 
 @st.cache_resource
@@ -169,7 +251,17 @@ if __name__ == "__main__":
     initialize_data()
 
     if "chat_history" not in st.session_state:
-        st.session_state["chat_history"] = [{"role": "system", "content": "Ты умный ассистент."}]
+        st.session_state["chat_history"] = [
+            {
+                "role": "system",
+                "content": (
+                    "Ты умный ассистент. "
+                    "Не используй словосочетания типа 'согласно предоставленным данным' или 'в списке'. "
+                    "Ответы должны быть максимально простыми, естественными и без лишних формальностей. И чтобы "
+                    "пользователь получил максимум конкретной информации."
+                )
+            }
+        ]
 
     # Интерфейс Streamlit
     st.title("Умный консультант с контекстом")
