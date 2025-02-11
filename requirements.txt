@@ -1,6 +1,9 @@
 phonenumbers
 streamlit
 python-dotenv
-langchain
 openai
 faiss-cpu
+langchain-community==0.3.17
+langchain==0.3.18
+tiktoken==0.8.0
+
